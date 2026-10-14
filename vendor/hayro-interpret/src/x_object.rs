@@ -432,8 +432,11 @@ impl<'a> ImageXObject<'a> {
 }
 
 /// PdfCraft patch: budget for [`DecodedImageCache`] entries per interpreter cache: decoded
-/// image pixels shared across tiles and scales. Past it the cache starts a fresh epoch.
-const MAX_DECODED_IMAGE_BYTES: usize = 64 << 20;
+/// image pixels shared across tiles and scales. Past it the cache starts a fresh epoch. Every
+/// render worker has its own cache, so this is paid per worker; 32 MiB still holds one A4 page
+/// scanned in colour at 300 dpi (2480 × 3508 × 3 ≈ 26 MB). A larger image is decoded for every
+/// draw and never kept (see [`DecodedImageCache::get_or_insert_with`]).
+const MAX_DECODED_IMAGE_BYTES: usize = 32 << 20;
 
 /// PdfCraft patch: pixel bytes held by a decoded mask.
 fn decoded_mask_size(mask: &DecodedMask) -> usize {

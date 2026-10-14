@@ -476,6 +476,35 @@ pub(crate) fn panic_message(p: &Box<dyn std::any::Any + Send>) -> String {
 /// How long one page may render before the pool gives up on it (the watchdog).
 pub const STUCK_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Most workers a pool starts unless `PDFCRAFT_RENDER_THREADS` says otherwise. Every worker keeps
+/// its own render caches (decoded images up to 32 MiB, fonts, glyph outlines), so the count is
+/// also a memory budget: seven workers on an 8-thread laptop could hold 448 MiB of decoded images
+/// for one open document. Three keep the visible pages and their neighbours rendering, leave a
+/// core for the interface, and fit an 8 GB machine.
+pub const DEFAULT_MAX_RENDER_THREADS: usize = 3;
+/// Most workers `PDFCRAFT_RENDER_THREADS` may ask for.
+pub const MAX_RENDER_THREADS: usize = 8;
+/// The environment variable that sets the worker count: a whole number, clamped to
+/// `1..=MAX_RENDER_THREADS`; anything else is ignored.
+pub const RENDER_THREADS_ENV: &str = "PDFCRAFT_RENDER_THREADS";
+
+/// How many workers a pool starts on a machine with `cores` hardware threads. `requested` is the
+/// value of [`RENDER_THREADS_ENV`], if set: a whole number is clamped to `1..=MAX_RENDER_THREADS`
+/// and anything else is ignored. Otherwise one less than the cores (the interface keeps one), at
+/// least one and at most [`DEFAULT_MAX_RENDER_THREADS`]. Pure, so it is tested without a document.
+pub fn render_threads_for(cores: usize, requested: Option<&str>) -> usize {
+    if let Some(n) = requested.and_then(|s| s.trim().parse::<usize>().ok()) {
+        return n.clamp(1, MAX_RENDER_THREADS);
+    }
+    cores.saturating_sub(1).clamp(1, DEFAULT_MAX_RENDER_THREADS)
+}
+
+/// [`render_threads_for`] with this machine's core count and its `PDFCRAFT_RENDER_THREADS`.
+pub fn default_render_threads() -> usize {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    render_threads_for(cores, std::env::var(RENDER_THREADS_ENV).ok().as_deref())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BusyStage {
@@ -2228,6 +2257,36 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn render_threads_default_leaves_a_core_and_stops_at_three() {
+        assert_eq!(render_threads_for(2, None), 1);
+        assert_eq!(render_threads_for(4, None), 3);
+        assert_eq!(render_threads_for(8, None), DEFAULT_MAX_RENDER_THREADS);
+        assert_eq!(render_threads_for(32, None), DEFAULT_MAX_RENDER_THREADS);
+    }
+
+    #[test]
+    fn render_threads_on_a_single_core_machine_is_one() {
+        assert_eq!(render_threads_for(1, None), 1);
+        assert_eq!(render_threads_for(0, None), 1);
+    }
+
+    #[test]
+    fn render_threads_override_is_a_whole_number_clamped_to_one_through_eight() {
+        assert_eq!(render_threads_for(8, Some("6")), 6);
+        assert_eq!(render_threads_for(8, Some(" 2 ")), 2);
+        assert_eq!(render_threads_for(1, Some("4")), 4);
+        assert_eq!(render_threads_for(8, Some("0")), 1);
+        assert_eq!(render_threads_for(8, Some("100")), MAX_RENDER_THREADS);
+    }
+
+    #[test]
+    fn render_threads_ignores_an_invalid_override() {
+        for bad in ["", "three", "-1", "2.5", "4 workers"] {
+            assert_eq!(render_threads_for(8, Some(bad)), DEFAULT_MAX_RENDER_THREADS, "{bad:?}");
+        }
+    }
 
     // Metadata-only: the test budget is 128 pixels and no image buffer is allocated.
     #[test]
