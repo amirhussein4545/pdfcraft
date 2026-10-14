@@ -843,8 +843,10 @@ fn shown_under_redactions(
     Ok(())
 }
 
+/// Workers per document: `pdfcraft_render::default_render_threads` (at most three unless
+/// `PDFCRAFT_RENDER_THREADS` says otherwise), since every worker keeps its own render caches.
 fn render_threads() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8) - 1
+    pdfcraft_render::default_render_threads()
 }
 
 /// Render `doc` with the layer visibility in its `info.layers`.
